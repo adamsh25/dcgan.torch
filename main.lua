@@ -1,26 +1,30 @@
 require 'torch'
 require 'nn'
 require 'optim'
+require 'io'
+require 'os'
 
 opt = {
-   dataset = 'lsun',       -- imagenet / lsun / folder
+   dataset = 'folder',       -- imagenet / lsun / folder
    batchSize = 64,
-   loadSize = 96,
-   fineSize = 64,
+   loadSize = 129,
+   fineSize = 128,
    nz = 100,               -- #  of dim for Z
-   ngf = 64,               -- #  of gen filters in first conv layer
-   ndf = 64,               -- #  of discrim filters in first conv layer
+   ngf = 150,               -- #  of gen filters in first conv layer
+   ndf = 50,               -- #  of discrim filters in first conv layer
    nThreads = 4,           -- #  of data loading threads to use
-   niter = 25,             -- #  of iter at starting learning rate
+   niter = 100,             -- #  of iter at starting learning rate
    lr = 0.0002,            -- initial learning rate for adam
    beta1 = 0.5,            -- momentum term of adam
    ntrain = math.huge,     -- #  of examples per epoch. math.huge for full dataset
-   display = 1,            -- display samples while training. 0 = false
+   display = 0,            -- display samples while training. 0 = false
    display_id = 10,        -- display window id.
-   gpu = 1,                -- gpu = 0 is CPU mode. gpu=X is GPU mode on GPU X
-   name = 'experiment1',
+   gpu = 0,                -- gpu = 0 is CPU mode. gpu=X is GPU mode on GPU X
+   name = 'experiment4',
    noise = 'normal',       -- uniform / normal
-   epoch_save_modulo = 1;
+   epoch = 1,
+   continue=0,
+   epoch_save_modulo = 2;
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
@@ -64,48 +68,6 @@ local SpatialBatchNormalization = nn.SpatialBatchNormalization
 local SpatialConvolution = nn.SpatialConvolution
 local SpatialFullConvolution = nn.SpatialFullConvolution
 
-local netG = nn.Sequential()
--- input is Z, going into a convolution
-netG:add(SpatialFullConvolution(nz, ngf * 8, 4, 4))
-netG:add(SpatialBatchNormalization(ngf * 8)):add(nn.ReLU(true))
--- state size: (ngf*8) x 4 x 4
-netG:add(SpatialFullConvolution(ngf * 8, ngf * 4, 4, 4, 2, 2, 1, 1))
-netG:add(SpatialBatchNormalization(ngf * 4)):add(nn.ReLU(true))
--- state size: (ngf*4) x 8 x 8
-netG:add(SpatialFullConvolution(ngf * 4, ngf * 2, 4, 4, 2, 2, 1, 1))
-netG:add(SpatialBatchNormalization(ngf * 2)):add(nn.ReLU(true))
--- state size: (ngf*2) x 16 x 16
-netG:add(SpatialFullConvolution(ngf * 2, ngf, 4, 4, 2, 2, 1, 1))
-netG:add(SpatialBatchNormalization(ngf)):add(nn.ReLU(true))
--- state size: (ngf) x 32 x 32
-netG:add(SpatialFullConvolution(ngf, nc, 4, 4, 2, 2, 1, 1))
-netG:add(nn.Tanh())
--- state size: (nc) x 64 x 64
-
-netG:apply(weights_init)
-
-local netD = nn.Sequential()
-
--- input is (nc) x 64 x 64
-netD:add(SpatialConvolution(nc, ndf, 4, 4, 2, 2, 1, 1))
-netD:add(nn.LeakyReLU(0.2, true))
--- state size: (ndf) x 32 x 32
-netD:add(SpatialConvolution(ndf, ndf * 2, 4, 4, 2, 2, 1, 1))
-netD:add(SpatialBatchNormalization(ndf * 2)):add(nn.LeakyReLU(0.2, true))
--- state size: (ndf*2) x 16 x 16
-netD:add(SpatialConvolution(ndf * 2, ndf * 4, 4, 4, 2, 2, 1, 1))
-netD:add(SpatialBatchNormalization(ndf * 4)):add(nn.LeakyReLU(0.2, true))
--- state size: (ndf*4) x 8 x 8
-netD:add(SpatialConvolution(ndf * 4, ndf * 8, 4, 4, 2, 2, 1, 1))
-netD:add(SpatialBatchNormalization(ndf * 8)):add(nn.LeakyReLU(0.2, true))
--- state size: (ndf*8) x 4 x 4
-netD:add(SpatialConvolution(ndf * 8, 1, 4, 4))
-netD:add(nn.Sigmoid())
--- state size: 1 x 1 x 1
-netD:add(nn.View(1):setNumInputDims(3))
--- state size: 1
-
-netD:apply(weights_init)
 
 local criterion = nn.BCECriterion()
 ---------------------------------------------------------------------------
@@ -125,6 +87,66 @@ local errD, errG
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
+
+if opt.continue == 1 then
+   netD = torch.load('checkpoints/' .. opt.name .. '_' .. opt.epoch .. '_net_D.t7')
+   netG = torch.load('checkpoints/' .. opt.name .. '_' .. opt.epoch .. '_net_G.t7')
+else
+	-- init netD ---------------------------------------------------
+	netD = nn.Sequential()
+	-- input is (nc) x 128 x 128
+	netD:add(SpatialConvolution(nc, ndf, 4, 4, 2, 2, 1, 1))
+	netD:add(nn.LeakyReLU(0.2, true))
+	-- state size: (ndf) x 64 x 64
+	netD:add(SpatialConvolution(ndf, ndf * 2, 4, 4, 2, 2, 1, 1))
+	netD:add(SpatialBatchNormalization(ndf * 2)):add(nn.LeakyReLU(0.2, true))
+	-- state size: (ndf*2) x 32 x 32
+	netD:add(SpatialConvolution(ndf * 2, ndf * 4, 4, 4, 2, 2, 1, 1))
+	netD:add(SpatialBatchNormalization(ndf * 4)):add(nn.LeakyReLU(0.2, true))
+	-- state size: (ndf*4) x 16 x 16
+	netD:add(SpatialConvolution(ndf * 4, ndf * 8, 4, 4, 2, 2, 1, 1))
+	netD:add(SpatialBatchNormalization(ndf * 8)):add(nn.LeakyReLU(0.2, true))
+	-- state size: (ndf*8) x 8 x 8
+	netD:add(SpatialConvolution(ndf * 8, ndf * 16, 4, 4, 2, 2, 1, 1))
+	netD:add(SpatialBatchNormalization(ndf * 16)):add(nn.LeakyReLU(0.2, true))
+	-- state size: (ndf*16) x 4 x 4
+	netD:add(SpatialConvolution(ndf * 16, 1, 4, 4))
+	netD:add(nn.Sigmoid())
+	-- state size: 1 x 1 x 1
+	netD:add(nn.View(1):setNumInputDims(3))
+	-- state size: 1
+	netD:apply(weights_init)
+	
+	
+	-- init netG ---------------------------------------------------
+	
+	
+	netG = nn.Sequential()
+	-- input is Z, going into a convolution
+	netG:add(SpatialFullConvolution(nz, ngf * 16, 4, 4))
+	netG:add(SpatialBatchNormalization(ngf * 16)):add(nn.ReLU(true))
+	-- state size: (ngf*16) x 4 x 4
+	netG:add(SpatialFullConvolution(ngf * 16, ngf * 8, 4, 4, 2, 2, 1, 1))
+	netG:add(SpatialBatchNormalization(ngf * 8)):add(nn.ReLU(true))
+	-- state size: (ngf*8) x 8 x 8
+	netG:add(SpatialFullConvolution(ngf * 8, ngf * 4, 4, 4, 2, 2, 1, 1))
+	netG:add(SpatialBatchNormalization(ngf * 4)):add(nn.ReLU(true))
+	-- state size: (ngf*4) x 16 x 16
+	netG:add(SpatialFullConvolution(ngf * 4, ngf * 2, 4, 4, 2, 2, 1, 1))
+	netG:add(SpatialBatchNormalization(ngf * 2)):add(nn.ReLU(true))
+	-- state size: (ngf * 2) x 32 x 32
+	netG:add(SpatialFullConvolution(ngf * 2, ngf, 4, 4, 2, 2, 1, 1))
+	netG:add(SpatialBatchNormalization(ngf)):add(nn.ReLU(true))
+	-- state size: (ngf) x 64 x 64
+	netG:add(SpatialFullConvolution(ngf, nc, 4, 4, 2, 2, 1, 1))
+	netG:add(nn.Tanh())
+	-- state size: (nc) x 128 x 128
+	netG:apply(weights_init)
+
+end
+
+local parametersD, gradParametersD = netD:getParameters()
+local parametersG, gradParametersG = netG:getParameters()
 ----------------------------------------------------------------------------
 if opt.gpu > 0 then
    require 'cunn'
@@ -140,8 +162,6 @@ if opt.gpu > 0 then
    netD:cuda();           netG:cuda();           criterion:cuda()
 end
 
-local parametersD, gradParametersD = netD:getParameters()
-local parametersG, gradParametersG = netG:getParameters()
 
 if opt.display then disp = require 'display' end
 
@@ -207,8 +227,18 @@ local fGx = function(x)
    return errG, gradParametersG
 end
 
+
+local coro = coroutine.create(function(opt, epoch)
+	  os.execute('display=0 gpu=0 name=' .. opt.name .. ' batchSize=1 imsize=20 epoch=' .. epoch .. ' th generate.lua')
+	  --local file = assert(io.popen('display=0 gpu=0 name=' .. opt.name .. ' batchSize=1 imsize=20 epoch=' .. epoch .. ' th generate.lua', 'r'))
+	  --local output = file:read('*all')
+	  --file:close()
+	  --print(output) -- > Prints the output of the command.
+	  print('Done creating image for epoch ' .. epoch)
+	end)
+
 -- train
-for epoch = 1, opt.niter do
+for epoch = opt.epoch, opt.niter do
    epoch_tm:reset()
    local counter = 0
    for i = 1, math.min(data:size(), opt.ntrain), opt.batchSize do
@@ -244,6 +274,7 @@ for epoch = 1, opt.niter do
    if epoch % epoch_save_modulo == 0 then -- allows to pass in modulo value to only save checkpoints at certain intervals
       torch.save('checkpoints/' .. opt.name .. '_' .. epoch .. '_net_G.t7', netG:clearState())
       torch.save('checkpoints/' .. opt.name .. '_' .. epoch .. '_net_D.t7', netD:clearState())
+	  coroutine.resume(coro, opt, epoch)
     end
       parametersD, gradParametersD = netD:getParameters() -- reflatten the params and get them
       parametersG, gradParametersG = netG:getParameters()
