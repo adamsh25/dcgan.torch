@@ -30,6 +30,13 @@ opt = {
 -- one-line argument parser. parses enviroment variables to override the defaults
 for k,v in pairs(opt) do opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] end
 print(opt)
+
+if opt.gpu > 0 then
+	print('OPT using GPU')
+	require 'cunn'
+	require 'cudnn'
+end
+
 if opt.display == 0 then opt.display = false end
 
 opt.manualSeed = torch.random(1, 10000) -- fix seed
@@ -145,23 +152,25 @@ else
 
 end
 
-local parametersD, gradParametersD = netD:getParameters()
-local parametersG, gradParametersG = netG:getParameters()
 ----------------------------------------------------------------------------
 if opt.gpu > 0 then
-   require 'cunn'
-   cutorch.setDevice(opt.gpu)
-   input = input:cuda();  noise = noise:cuda();  label = label:cuda()
-
-   if pcall(require, 'cudnn') then
-      require 'cudnn'
-      cudnn.benchmark = true
-      cudnn.convert(netG, cudnn)
-      cudnn.convert(netD, cudnn)
-   end
-   netD:cuda();           netG:cuda();           criterion:cuda()
+	require 'cunn'
+      	cutorch.setDevice(opt.gpu)
+   	input = input:cuda();  noise = noise:cuda();  label = label:cuda()
+       	print('using GPU')
+        if pcall(require, 'cudnn') then
+		require 'cudnn'
+		print('using GPU with cudnn')
+	        cudnn.benchmark = true
+	      	cudnn.convert(netG, cudnn)
+            	cudnn.convert(netD, cudnn)
+		print('converted to cudnn')
+	end
+        netD:cuda();           netG:cuda();           criterion:cuda()
 end
 
+local parametersD, gradParametersD = netD:getParameters()
+local parametersG, gradParametersG = netG:getParameters()
 
 if opt.display then disp = require 'display' end
 
@@ -228,14 +237,14 @@ local fGx = function(x)
 end
 
 
-local coro = coroutine.create(function(opt, epoch)
-	  os.execute('display=0 gpu=0 name=' .. opt.name .. ' batchSize=1 imsize=20 epoch=' .. epoch .. ' th generate.lua')
+local coro = function(opt, epoch)
+	  os.execute('display=0 gpu=' .. opt.gpu .. ' name=' .. opt.name .. ' batchSize=1 imsize=20 epoch=' .. epoch .. ' th generate.lua')
 	  --local file = assert(io.popen('display=0 gpu=0 name=' .. opt.name .. ' batchSize=1 imsize=20 epoch=' .. epoch .. ' th generate.lua', 'r'))
 	  --local output = file:read('*all')
 	  --file:close()
 	  --print(output) -- > Prints the output of the command.
 	  print('Done creating image for epoch ' .. epoch)
-	end)
+	end
 
 -- train
 for epoch = opt.epoch, opt.niter do
@@ -274,7 +283,7 @@ for epoch = opt.epoch, opt.niter do
    if epoch % epoch_save_modulo == 0 then -- allows to pass in modulo value to only save checkpoints at certain intervals
       torch.save('checkpoints/' .. opt.name .. '_' .. epoch .. '_net_G.t7', netG:clearState())
       torch.save('checkpoints/' .. opt.name .. '_' .. epoch .. '_net_D.t7', netD:clearState())
-	  coroutine.resume(coro, opt, epoch)
+      coro(opt, epoch)
     end
       parametersD, gradParametersD = netD:getParameters() -- reflatten the params and get them
       parametersG, gradParametersG = netG:getParameters()
